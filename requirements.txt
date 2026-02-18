@@ -1,0 +1,4 @@
+fastapi
+uvicorn
+hyperliquid-python-sdk
+python-dotenv
