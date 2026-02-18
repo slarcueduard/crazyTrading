@@ -1,34 +1,45 @@
 import os
 from fastapi import FastAPI, Request
+from eth_account import Account
 from hyperliquid.exchange import Exchange
 from hyperliquid.utils import constants
 
 app = FastAPI()
 
-# Credentials from Render Environment Variables
-# Use the Agent Private Key you just saved!
-AGENT_KEY = os.getenv("AGENT_SECRET_KEY") 
+# 1. Fetch credentials from Render Environment Variables
+AGENT_KEY = os.getenv("AGENT_SECRET_KEY")
 SUB_ACCOUNT_ADDR = os.getenv("SUB_ACCOUNT_ADDR")
 
-# Initialize Agent
-# We point the exchange to use the sub-account specifically
-exchange = Exchange(wallet=None, base_url=constants.MAINNET_API_URL, private_key=AGENT_KEY, account_address=SUB_ACCOUNT_ADDR)
+# 2. Setup the Account object (The SDK requires this)
+# This converts your private key string into a wallet object the SDK can use
+agent_wallet = Account.from_key(AGENT_KEY)
+
+# 3. Correct Exchange Initialization
+# 'wallet' is the authorized agent, 'account_address' is the sub-account receiving the trade
+exchange = Exchange(
+    wallet=agent_wallet, 
+    base_url=constants.MAINNET_API_URL, 
+    account_address=SUB_ACCOUNT_ADDR
+)
 
 @app.post("/webhook")
 async def handle_webhook(request: Request):
-    data = await request.json()
-    coin = "HYPE" 
-    is_buy = data["action"].lower() == "buy"
-    
-    # Execute Trade
-    # This automatically opens the position and sets SL/TP as defined in your TradingView Message
-    print(f"Executing {data['action']} on {coin}")
-    response = exchange.market_open(
-        name=coin, 
-        is_buy=is_buy, 
-        sz=float(data["size"]), 
-        px=float(data["price"]), 
-        sl_px=float(data["sl"]), 
-        tp_px=float(data["tp"])
-    )
-    return {"status": "success", "response": response}
+    try:
+        data = await request.json()
+        coin = "HYPE" 
+        is_buy = data["action"].lower() == "buy"
+        
+        # Execute Trade
+        print(f"Executing {data['action']} on {coin}...")
+        response = exchange.market_open(
+            name=coin, 
+            is_buy=is_buy, 
+            sz=float(data["size"]), 
+            px=float(data["price"]), 
+            sl_px=float(data["sl"]), 
+            tp_px=float(data["tp"])
+        )
+        return {"status": "success", "response": response}
+    except Exception as e:
+        print(f"Error: {str(e)}")
+        return {"status": "error", "message": str(e)}
