@@ -28,9 +28,14 @@ async def handle_webhook(request: Request):
         data = await request.json()
         coin = "HYPE" 
         is_buy = data["action"].lower() == "buy"
+        
+        # --- FIX 1: Defined 'size' correctly ---
         size = float(data["size"])
-        sl_price = float(data["sl"])
-        tp_price = float(data["tp"])
+        
+        # --- FIX 2: Fixed Indentation & Rounding ---
+        sl_price = round(float(data["sl"]), 4)
+        tp_price = round(float(data["tp"]), 4)
+        px_price = round(float(data["price"]), 4)
 
         print(f"--- Signal Received: {data['action']} {coin} ---")
 
@@ -40,18 +45,17 @@ async def handle_webhook(request: Request):
             name=coin,
             is_buy=is_buy,
             sz=size,
-            px=float(data["price"]) # Uses chart price to calc slippage
+            px=px_price # Uses rounded price
         )
         print("Entry Sent.")
 
         # STEP 2: Place Stop Loss (Reduce-Only Trigger)
-        # logic: if we bought, we sell to stop loss
         print(f"2. Placing SL at {sl_price}")
         sl_resp = exchange.order(
             name=coin,
             is_buy=not is_buy, # Opposite of entry
             sz=size,
-            limit_px=sl_price, # Required arg, sets the worst acceptable price
+            limit_px=sl_price, 
             order_type={"trigger": {"isMarket": True, "triggerPx": sl_price, "tpsl": "sl"}},
             reduce_only=True
         )
