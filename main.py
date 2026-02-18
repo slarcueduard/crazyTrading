@@ -21,7 +21,9 @@ exchange = Exchange(
     base_url=constants.MAINNET_API_URL, 
     account_address=SUB_ACCOUNT_ADDR
 )
-
+@app.get("/")
+def wake_up():
+    return {"status": "I am awake"}
 @app.post("/webhook")
 async def handle_webhook(request: Request):
     try:
