@@ -12,7 +12,7 @@ SUB_ACCOUNT_ADDR = os.getenv("SUB_ACCOUNT_ADDR")
 
 # Initialize Agent
 # We point the exchange to use the sub-account specifically
-exchange = Exchange(SUB_ACCOUNT_ADDR, AGENT_KEY, base_url=constants.MAINNET_API_URL, account_address=SUB_ACCOUNT_ADDR)
+exchange = Exchange(wallet=None, base_url=constants.MAINNET_API_URL, private_key=AGENT_KEY, account_address=SUB_ACCOUNT_ADDR)
 
 @app.post("/webhook")
 async def handle_webhook(request: Request):
