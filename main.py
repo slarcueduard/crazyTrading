@@ -17,7 +17,6 @@ exchange = Exchange(
     account_address=SUB_ACCOUNT_ADDR
 )
 
-# 2. Add this "Welcome Mat" for UptimeRobot to fix the 405 Error
 @app.get("/")
 def root():
     return {"status": "Bot is awake and running!"}
@@ -29,15 +28,17 @@ async def handle_webhook(request: Request):
         coin = "HYPE" 
         is_buy = data["action"].lower() == "buy"
         
-        # --- FIX 1: Defined 'size' correctly ---
         size = float(data["size"])
-        
-        # --- FIX 2: Fixed Indentation & Rounding ---
         sl_price = round(float(data["sl"]), 4)
         tp_price = round(float(data["tp"]), 4)
         px_price = round(float(data["price"]), 4)
 
-        print(f"--- Signal Received: {data['action']} {coin} ---")
+        # Calculate a 10% slippage bumper for trigger orders to guarantee API acceptance
+        # If buying, limit must be higher. If selling, limit must be lower.
+        sl_limit = round(sl_price * 0.9 if is_buy else sl_price * 1.1, 4)
+        tp_limit = round(tp_price * 0.9 if is_buy else tp_price * 1.1, 4)
+
+        print(f"\n--- Signal Received: {data['action'].upper()} {size} {coin} ---")
 
         # STEP 1: Execute Market Entry
         print(f"1. Placing Entry Order...")
@@ -45,34 +46,37 @@ async def handle_webhook(request: Request):
             name=coin,
             is_buy=is_buy,
             sz=size,
-            px=px_price # Uses rounded price
+            px=px_price
         )
-        print("Entry Sent.")
+        print(f"Entry Response: {entry_resp}")
 
         # STEP 2: Place Stop Loss (Reduce-Only Trigger)
-        print(f"2. Placing SL at {sl_price}")
+        print(f"2. Placing SL Trigger at {sl_price} (API Limit: {sl_limit})")
         sl_resp = exchange.order(
             name=coin,
-            is_buy=not is_buy, # Opposite of entry
+            is_buy=not is_buy, 
             sz=size,
-            limit_px=sl_price, 
+            limit_px=sl_limit, # Uses the 10% bumper 
             order_type={"trigger": {"isMarket": True, "triggerPx": sl_price, "tpsl": "sl"}},
             reduce_only=True
         )
+        print(f"SL Response: {sl_resp}")
 
         # STEP 3: Place Take Profit (Reduce-Only Trigger)
-        print(f"3. Placing TP at {tp_price}")
+        print(f"3. Placing TP Trigger at {tp_price} (API Limit: {tp_limit})")
         tp_resp = exchange.order(
             name=coin,
-            is_buy=not is_buy, # Opposite of entry
+            is_buy=not is_buy, 
             sz=size,
-            limit_px=tp_price,
+            limit_px=tp_limit, # Uses the 10% bumper
             order_type={"trigger": {"isMarket": True, "triggerPx": tp_price, "tpsl": "tp"}},
             reduce_only=True
         )
+        print(f"TP Response: {tp_resp}")
+        print("--- Trade Execution Complete ---\n")
 
         return {"status": "success", "entry": entry_resp, "sl": sl_resp, "tp": tp_resp}
 
     except Exception as e:
-        print(f"ERROR: {str(e)}")
+        print(f"CRITICAL ERROR: {str(e)}")
         return {"status": "error", "message": str(e)}
