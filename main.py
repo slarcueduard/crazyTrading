@@ -33,14 +33,12 @@ async def handle_webhook(request: Request):
         tp_price = round(float(data["tp"]), 4)
         px_price = round(float(data["price"]), 4)
 
-        # Calculate a 10% slippage bumper for trigger orders to guarantee API acceptance
-        # If buying, limit must be higher. If selling, limit must be lower.
+        # 10% bumper ONLY applies to the Stop Loss now, since it is a Market Trigger
         sl_limit = round(sl_price * 0.9 if is_buy else sl_price * 1.1, 4)
-        tp_limit = round(tp_price * 0.9 if is_buy else tp_price * 1.1, 4)
 
         print(f"\n--- Signal Received: {data['action'].upper()} {size} {coin} ---")
 
-        # STEP 1: Execute Market Entry
+        # STEP 1: Execute Market Entry (Taker)
         print(f"1. Placing Entry Order...")
         entry_resp = exchange.market_open(
             name=coin,
@@ -50,26 +48,26 @@ async def handle_webhook(request: Request):
         )
         print(f"Entry Response: {entry_resp}")
 
-        # STEP 2: Place Stop Loss (Reduce-Only Trigger)
-        print(f"2. Placing SL Trigger at {sl_price} (API Limit: {sl_limit})")
+        # STEP 2: Place Stop Loss (Taker Market Trigger - Safety First)
+        print(f"2. Placing SL Trigger at {sl_price}...")
         sl_resp = exchange.order(
             name=coin,
             is_buy=not is_buy, 
             sz=size,
-            limit_px=sl_limit, # Uses the 10% bumper 
+            limit_px=sl_limit, 
             order_type={"trigger": {"isMarket": True, "triggerPx": sl_price, "tpsl": "sl"}},
             reduce_only=True
         )
         print(f"SL Response: {sl_resp}")
 
-        # STEP 3: Place Take Profit (Reduce-Only Trigger)
-        print(f"3. Placing TP Trigger at {tp_price} (API Limit: {tp_limit})")
+        # STEP 3: Place Take Profit (Resting Limit Order - Maker Fees)
+        print(f"3. Placing TP Maker Limit at {tp_price}...")
         tp_resp = exchange.order(
             name=coin,
             is_buy=not is_buy, 
             sz=size,
-            limit_px=tp_limit, # Uses the 10% bumper
-            order_type={"trigger": {"isMarket": True, "triggerPx": tp_price, "tpsl": "tp"}},
+            limit_px=tp_price, # Rests exactly at your target price
+            order_type={"limit": {"tif": "Alo"}}, # ALO strictly enforces Maker execution
             reduce_only=True
         )
         print(f"TP Response: {tp_resp}")
