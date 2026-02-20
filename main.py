@@ -14,10 +14,16 @@ agent_wallet = Account.from_key(AGENT_KEY)
 exchange = Exchange(agent_wallet, constants.MAINNET_API_URL, account_address=SUB_ACCOUNT_ADDR)
 info = Info(constants.MAINNET_API_URL, skip_ws=True)
 
-@app.get("/")
+# ==========================================
+# THE FRONT DOOR (For UptimeRobot)
+# ==========================================
+@app.api_route("/", methods=["GET", "HEAD"])
 def keep_alive():
     return {"status": "alive"}
 
+# ==========================================
+# THE BANK VAULT (For TradingView)
+# ==========================================
 @app.post("/webhook")
 async def handle_webhook(request: Request):
     try:
@@ -54,7 +60,7 @@ async def handle_webhook(request: Request):
                         print("Position Parachuted Successfully.")
             return {"status": "success", "message": "Parachute executed"}
 
-       # ==========================================
+        # ==========================================
         # ENTRY PROTOCOL: Target & Stop Loss
         # ==========================================
         if action in ["buy", "sell"]:
