@@ -14,6 +14,10 @@ agent_wallet = Account.from_key(AGENT_KEY)
 exchange = Exchange(agent_wallet, constants.MAINNET_API_URL, account_address=SUB_ACCOUNT_ADDR)
 info = Info(constants.MAINNET_API_URL, skip_ws=True)
 
+@app.get("/")
+def keep_alive():
+    return {"status": "alive"}
+
 @app.post("/webhook")
 async def handle_webhook(request: Request):
     try:
