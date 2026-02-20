@@ -50,12 +50,18 @@ async def handle_webhook(request: Request):
                         print("Position Parachuted Successfully.")
             return {"status": "success", "message": "Parachute executed"}
 
-        # ==========================================
+       # ==========================================
         # ENTRY PROTOCOL: Target & Stop Loss
         # ==========================================
         if action in ["buy", "sell"]:
             is_buy = (action == "buy")
-            size = float(data["size"])
+            
+            # --- DYNAMIC SIZE CALCULATION ---
+            POSITION_USD = 1000.0  # $100 margin * 10x leverage
+            raw_size = POSITION_USD / px_price
+            size = round(raw_size, 1) # Rounds to 1 decimal to prevent exchange lot-size errors
+            print(f"Dynamic Size Calculated: {size} HYPE (Value: ${POSITION_USD})")
+            # --------------------------------
             sl_price = round(float(data["sl"]), 4)
             tp_price = round(float(data["tp"]), 4)
             sl_limit = round(sl_price * 0.9 if is_buy else sl_price * 1.1, 4)
