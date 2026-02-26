@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, BackgroundTasks
 from eth_account import Account
 from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
@@ -14,31 +14,21 @@ agent_wallet = Account.from_key(AGENT_KEY)
 exchange = Exchange(agent_wallet, constants.MAINNET_API_URL, account_address=SUB_ACCOUNT_ADDR)
 info = Info(constants.MAINNET_API_URL, skip_ws=True)
 
-# ==========================================
-# THE FRONT DOOR (For UptimeRobot)
-# ==========================================
 @app.api_route("/", methods=["GET", "HEAD"])
 def keep_alive():
     return {"status": "alive"}
 
 # ==========================================
-# THE BANK VAULT (For TradingView)
+# THE BACKGROUND WORKER (Heavy Lifting)
 # ==========================================
-@app.post("/webhook")
-async def handle_webhook(request: Request):
+def execute_trade_logic(data: dict):
     try:
-        data = await request.json()
         coin = "HYPE"
         action = data["action"].lower()
-        
-        # Hyperliquid strictly requires a maximum of 5 significant figures
         px_price = float(f'{float(data["price"]):.5g}')
 
-        print(f"\n--- Signal Received: {action.upper()} {coin} ---")
+        print(f"\n--- Background Worker Started: {action.upper()} {coin} ---")
 
-        # ==========================================
-        # PARACHUTE PROTOCOL: Sweep & Clear
-        # ==========================================
         if action in ["close_long", "close_short"]:
             print("1. Sweeping pending SL/TP orders...")
             open_orders = info.open_orders(SUB_ACCOUNT_ADDR)
@@ -60,22 +50,15 @@ async def handle_webhook(request: Request):
                             order_type={"limit": {"tif": "Ioc"}}, reduce_only=True
                         )
                         print(f"Parachute Response: {resp}")
-            return {"status": "success", "message": "Parachute executed"}
 
-        # ==========================================
-        # ENTRY PROTOCOL: Target & Stop Loss
-        # ==========================================
         if action in ["buy", "sell"]:
             is_buy = (action == "buy")
             
-            # --- DYNAMIC SIZE CALCULATION ---
-            POSITION_USD = 1000.0  # $100 margin * 10x leverage
+            POSITION_USD = 1000.0  
             raw_size = POSITION_USD / px_price
-            size = round(raw_size, 1) # Rounds to 1 decimal for lot size
+            size = round(raw_size, 1) 
             print(f"Dynamic Size Calculated: {size} HYPE (Value: ${POSITION_USD})")
-            # --------------------------------
             
-            # Enforce 5 significant figures for all limits
             sl_price = float(f'{float(data["sl"]):.5g}')
             tp_price = float(f'{float(data["tp"]):.5g}')
             sl_limit = float(f'{sl_price * 0.9 if is_buy else sl_price * 1.1:.5g}')
@@ -98,9 +81,17 @@ async def handle_webhook(request: Request):
                 order_type={"limit": {"tif": "Alo"}}, reduce_only=True
             )
             print(f"TP Response: {tp_resp}")
-            
-            return {"status": "success", "message": "Trade Opened with SL/TP"}
 
     except Exception as e:
-        print(f"CRITICAL ERROR: {str(e)}")
-        return {"status": "error", "message": str(e)}
+        print(f"CRITICAL ERROR IN BACKGROUND: {str(e)}")
+
+# ==========================================
+# THE FRONT DESK (For TradingView)
+# ==========================================
+@app.post("/webhook")
+async def handle_webhook(request: Request, bg_tasks: BackgroundTasks):
+    data = await request.json()
+    # Instantly pass the data to the background worker
+    bg_tasks.add_task(execute_trade_logic, data)
+    # Immediately hang up the phone with TradingView to prevent timeout
+    return {"status": "fast_ack", "message": "Signal received, processing in background"}
