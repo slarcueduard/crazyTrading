@@ -54,7 +54,7 @@ def execute_trade_logic(data: dict):
         if action in ["buy", "sell"]:
             is_buy = (action == "buy")
             
-            POSITION_USD = 1000.0  
+            POSITION_USD = 2000.0  
             raw_size = POSITION_USD / px_price
             size = round(raw_size, 1) 
             print(f"Dynamic Size Calculated: {size} HYPE (Value: ${POSITION_USD})")
