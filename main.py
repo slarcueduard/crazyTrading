@@ -1,20 +1,14 @@
 import os
-import uvicorn
 import time
 import requests
 import pandas as pd
 import pandas_ta as ta
 from fastapi import FastAPI
 import threading
+import uvicorn
 from datetime import datetime
 
-
-# Render furnizează portul prin variabila de mediu PORT
-if __name__ == "__main__":
-    # Portul 10000 este cel standard pe Render, dar folosim variabila lor pentru siguranță
-    port = int(os.environ.get("PORT", 10000))
-    # 'main:app' se referă la fișierul main.py și variabila app = FastAPI()
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
+# 1. Definirea aplicației FastAPI (Trebuie să fie la început)
 app = FastAPI()
 
 # --- CONFIGURARE API EXTENDED (DIN RENDER ENV) ---
@@ -35,40 +29,36 @@ trades_today = 0
 last_trade_day = datetime.now().day
 
 def get_market_data():
-    """Obține datele de piață de la Extended/Hyperliquid."""
-    # Înlocuiește cu URL-ul de API al platformei Extended
+    """Obține datele de piață de la Extended."""
     url = f"https://api.extended.exchange/v1/candles?symbol={SYMBOL}&interval={TIMEFRAME}"
     try:
-        r = requests.get(url)
+        r = requests.get(url, timeout=10)
         data = r.json()
         df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['close'] = df['close'].astype(float)
         df['volume'] = df['volume'].astype(float)
+        df['high'] = df['high'].astype(float)
+        df['low'] = df['low'].astype(float)
         return df
-    except:
+    except Exception as e:
+        print(f"Eroare la preluarea datelor: {e}")
         return pd.DataFrame()
 
 def check_signals(df):
     """Sistemul Sniper: EMA 200 + ADX + BB Squeeze + Hull + Volume Spike."""
     if df.empty or len(df) < 200: return None
 
-    # 1. EMA 200 (Zidul)
     df['ema200'] = ta.ema(df['close'], length=200)
-    # 2. ADX (Puterea > 25)
     adx = ta.adx(df['high'], df['low'], df['close'], length=14)
     df['adx'] = adx['ADX_14']
-    # 3. Bollinger Bands (Squeeze)
     bb = ta.bbands(df['close'], length=20, std=2)
     df['bb_width'] = (bb['BBU_20_2.0'] - bb['BBL_20_2.0']) / bb['BBM_20_2.0']
-    # 4. Hull Suite (Trigger)
     df['hull'] = ta.hma(df['close'], length=14)
-    # 5. Volume Spike (1.5x)
     df['vol_sma'] = ta.sma(df['volume'], length=20)
 
     curr = df.iloc[-1]
     prev = df.iloc[-2]
 
-    # LOGICA DE INTRARE (Target 1%)
     long_cond = (curr['close'] > curr['ema200'] and curr['adx'] > 25 and 
                  curr['hull'] > prev['hull'] and curr['volume'] > curr['vol_sma'] * 1.5)
     
@@ -80,11 +70,10 @@ def check_signals(df):
     return None
 
 def execute_extended_trade(side, price):
-    """Execută ordinul pe platforma Extended folosind Stark Keys."""
+    """Execută ordinul pe platforma Extended."""
     tp = price * 1.0105 if side == "LONG" else price * 0.9895
     sl = price * 0.9905 if side == "LONG" else price * 1.0095
     
-    # Payload-ul specific pentru Extended (Starknet L2)
     order_data = {
         "api_key": API_KEY,
         "stark_key": STARK_PUBLIC,
@@ -94,41 +83,46 @@ def execute_extended_trade(side, price):
         "side": side,
         "amount": (RISK_USD * LEVERAGE) / price,
         "price": price,
-        "type": "LIMIT", # Maker points
+        "type": "LIMIT",
         "tp": tp,
         "sl": sl
     }
     
-    # Trimite către endpoint-ul de execuție Extended sau UltimateRobot Bridge
-    requests.post("https://api.extended.exchange/v1/order", json=order_data)
-    print(f"[{datetime.now()}] Poziție {side} deschisă la {price}. TP: {tp}, SL: {sl}")
+    try:
+        requests.post("https://api.extended.exchange/v1/order", json=order_data, timeout=10)
+        print(f"[{datetime.now()}] Poziție {side} deschisă la {price}. TP: {tp}, SL: {sl}")
+    except Exception as e:
+        print(f"Eroare la execuție: {e}")
 
 def bot_loop():
     global trades_today, last_trade_day
+    print("Loop-ul de trading a pornit...")
     while True:
-        if datetime.now().day != last_trade_day:
-            trades_today = 0
-            last_trade_day = datetime.now().day
+        try:
+            if datetime.now().day != last_trade_day:
+                trades_today = 0
+                last_trade_day = datetime.now().day
 
-        if trades_today < DAILY_LIMIT:
-            df = get_market_data()
-            signal = check_signals(df)
-            if signal:
-                execute_extended_trade(signal, df['close'].iloc[-1])
-                trades_today += 1
-        
-        time.sleep(60) # Verifică în fiecare minut
+            if trades_today < DAILY_LIMIT:
+                df = get_market_data()
+                signal = check_signals(df)
+                if signal:
+                    execute_extended_trade(signal, df['close'].iloc[-1])
+                    trades_today += 1
+            
+            time.sleep(60)
+        except Exception as e:
+            print(f"Eroare în loop: {e}")
+            time.sleep(30)
 
 @app.get("/")
 def status():
-    return {"bot": "HYPE-Sniper", "platform": "Extended", "trades_today": trades_today}
+    return {"bot": "HYPE-Sniper", "platform": "Extended", "trades_today": trades_today, "status": "online"}
 
+# 2. Pornirea thread-ului de trading
 threading.Thread(target=bot_loop, daemon=True).start()
-import os
-import uvicorn
 
+# 3. Pornirea serverului (Singurul bloc de execuție final)
 if __name__ == "__main__":
-    # Render furnizează variabila PORT. Dacă lipsește, folosim 10000 ca fallback.
     port = int(os.environ.get("PORT", 10000))
-    uvicorn.run("main:app", host="0.0.0.0", port=port)
-    
+    uvicorn.run(app, host="0.0.0.0", port=port)
