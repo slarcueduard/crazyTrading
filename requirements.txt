@@ -1,4 +1,5 @@
 fastapi
 uvicorn
-hyperliquid-python-sdk
-python-dotenv
+pandas
+pandas_ta
+requests
