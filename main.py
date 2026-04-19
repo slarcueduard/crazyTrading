@@ -1,4 +1,5 @@
 import os
+import uvicorn
 import time
 import requests
 import pandas as pd
@@ -7,6 +8,13 @@ from fastapi import FastAPI
 import threading
 from datetime import datetime
 
+
+# Render furnizează portul prin variabila de mediu PORT
+if __name__ == "__main__":
+    # Portul 10000 este cel standard pe Render, dar folosim variabila lor pentru siguranță
+    port = int(os.environ.get("PORT", 10000))
+    # 'main:app' se referă la fișierul main.py și variabila app = FastAPI()
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
 app = FastAPI()
 
 # --- CONFIGURARE API EXTENDED (DIN RENDER ENV) ---
