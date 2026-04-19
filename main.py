@@ -116,3 +116,11 @@ def status():
     return {"bot": "HYPE-Sniper", "platform": "Extended", "trades_today": trades_today}
 
 threading.Thread(target=bot_loop, daemon=True).start()
+import os
+import uvicorn
+
+if __name__ == "__main__":
+    # Render furnizează variabila PORT. Dacă lipsește, folosim 10000 ca fallback.
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port)
+    
