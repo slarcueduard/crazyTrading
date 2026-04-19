@@ -1,97 +1,118 @@
 import os
-from fastapi import FastAPI, Request, BackgroundTasks
-from eth_account import Account
-from hyperliquid.exchange import Exchange
-from hyperliquid.info import Info
-from hyperliquid.utils import constants
+import time
+import requests
+import pandas as pd
+import pandas_ta as ta
+from fastapi import FastAPI
+import threading
+from datetime import datetime
 
 app = FastAPI()
 
-AGENT_KEY = os.getenv("AGENT_SECRET_KEY")
-SUB_ACCOUNT_ADDR = os.getenv("SUB_ACCOUNT_ADDR")
-agent_wallet = Account.from_key(AGENT_KEY)
+# --- CONFIGURARE API EXTENDED (DIN RENDER ENV) ---
+API_KEY = os.getenv("EXTENDED_API_KEY")
+STARK_PUBLIC = os.getenv("STARK_KEY_PUBLIC")
+STARK_PRIVATE = os.getenv("STARK_KEY_PRIVATE")
+VAULT_NUMBER = os.getenv("VAULT_NUMBER")
+CLIENT_ID = os.getenv("CLIENT_ID")
 
-exchange = Exchange(agent_wallet, constants.MAINNET_API_URL, account_address=SUB_ACCOUNT_ADDR)
-info = Info(constants.MAINNET_API_URL, skip_ws=True)
+SYMBOL = "HYPE-USDC"
+TIMEFRAME = "15m"
+LEVERAGE = 10
+RISK_USD = 100.0
+DAILY_LIMIT = 2
 
-@app.api_route("/", methods=["GET", "HEAD"])
-def keep_alive():
-    return {"status": "alive"}
+# Starea botului
+trades_today = 0
+last_trade_day = datetime.now().day
 
-# ==========================================
-# THE BACKGROUND WORKER (Heavy Lifting)
-# ==========================================
-def execute_trade_logic(data: dict):
+def get_market_data():
+    """Obține datele de piață de la Extended/Hyperliquid."""
+    # Înlocuiește cu URL-ul de API al platformei Extended
+    url = f"https://api.extended.exchange/v1/candles?symbol={SYMBOL}&interval={TIMEFRAME}"
     try:
-        coin = "HYPE"
-        action = data["action"].lower()
-        px_price = float(f'{float(data["price"]):.5g}')
+        r = requests.get(url)
+        data = r.json()
+        df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['close'] = df['close'].astype(float)
+        df['volume'] = df['volume'].astype(float)
+        return df
+    except:
+        return pd.DataFrame()
 
-        print(f"\n--- Background Worker Started: {action.upper()} {coin} ---")
+def check_signals(df):
+    """Sistemul Sniper: EMA 200 + ADX + BB Squeeze + Hull + Volume Spike."""
+    if df.empty or len(df) < 200: return None
 
-        if action in ["close_long", "close_short"]:
-            print("1. Sweeping pending SL/TP orders...")
-            open_orders = info.open_orders(SUB_ACCOUNT_ADDR)
-            for order in open_orders:
-                if order["coin"] == coin:
-                    exchange.cancel(coin, order["oid"])
-            
-            print("2. Closing active position...")
-            user_state = info.user_state(SUB_ACCOUNT_ADDR)
-            for pos in user_state["assetPositions"]:
-                if pos["position"]["coin"] == coin:
-                    pos_size = float(pos["position"]["szi"])
-                    if (pos_size > 0 and action == "close_long") or (pos_size < 0 and action == "close_short"):
-                        is_buy = pos_size < 0 
-                        limit_px = float(f'{px_price * 1.1 if is_buy else px_price * 0.9:.5g}')
-                        
-                        resp = exchange.order(
-                            name=coin, is_buy=is_buy, sz=abs(pos_size), limit_px=limit_px,
-                            order_type={"limit": {"tif": "Ioc"}}, reduce_only=True
-                        )
-                        print(f"Parachute Response: {resp}")
+    # 1. EMA 200 (Zidul)
+    df['ema200'] = ta.ema(df['close'], length=200)
+    # 2. ADX (Puterea > 25)
+    adx = ta.adx(df['high'], df['low'], df['close'], length=14)
+    df['adx'] = adx['ADX_14']
+    # 3. Bollinger Bands (Squeeze)
+    bb = ta.bbands(df['close'], length=20, std=2)
+    df['bb_width'] = (bb['BBU_20_2.0'] - bb['BBL_20_2.0']) / bb['BBM_20_2.0']
+    # 4. Hull Suite (Trigger)
+    df['hull'] = ta.hma(df['close'], length=14)
+    # 5. Volume Spike (1.5x)
+    df['vol_sma'] = ta.sma(df['volume'], length=20)
 
-        if action in ["buy", "sell"]:
-            is_buy = (action == "buy")
-            
-            POSITION_USD = 2500.0  
-            raw_size = POSITION_USD / px_price
-            size = round(raw_size, 1) 
-            print(f"Dynamic Size Calculated: {size} HYPE (Value: ${POSITION_USD})")
-            
-            sl_price = float(f'{float(data["sl"]):.5g}')
-            tp_price = float(f'{float(data["tp"]):.5g}')
-            sl_limit = float(f'{sl_price * 0.9 if is_buy else sl_price * 1.1:.5g}')
+    curr = df.iloc[-1]
+    prev = df.iloc[-2]
 
-            print("1. Placing Market Entry...")
-            entry_resp = exchange.market_open(coin, is_buy, size, px_price)
-            print(f"Entry Response: {entry_resp}")
-            
-            print("2. Placing Taker Stop Loss...")
-            sl_resp = exchange.order(
-                name=coin, is_buy=not is_buy, sz=size, limit_px=sl_limit,
-                order_type={"trigger": {"isMarket": True, "triggerPx": sl_price, "tpsl": "sl"}},
-                reduce_only=True
-            )
-            print(f"SL Response: {sl_resp}")
+    # LOGICA DE INTRARE (Target 1%)
+    long_cond = (curr['close'] > curr['ema200'] and curr['adx'] > 25 and 
+                 curr['hull'] > prev['hull'] and curr['volume'] > curr['vol_sma'] * 1.5)
+    
+    short_cond = (curr['close'] < curr['ema200'] and curr['adx'] > 25 and 
+                  curr['hull'] < prev['hull'] and curr['volume'] > curr['vol_sma'] * 1.5)
 
-            print("3. Placing Maker Take Profit (ALO)...")
-            tp_resp = exchange.order(
-                name=coin, is_buy=not is_buy, sz=size, limit_px=tp_price,
-                order_type={"limit": {"tif": "Alo"}}, reduce_only=True
-            )
-            print(f"TP Response: {tp_resp}")
+    if long_cond: return "LONG"
+    if short_cond: return "SHORT"
+    return None
 
-    except Exception as e:
-        print(f"CRITICAL ERROR IN BACKGROUND: {str(e)}")
+def execute_extended_trade(side, price):
+    """Execută ordinul pe platforma Extended folosind Stark Keys."""
+    tp = price * 1.0105 if side == "LONG" else price * 0.9895
+    sl = price * 0.9905 if side == "LONG" else price * 1.0095
+    
+    # Payload-ul specific pentru Extended (Starknet L2)
+    order_data = {
+        "api_key": API_KEY,
+        "stark_key": STARK_PUBLIC,
+        "vault_id": VAULT_NUMBER,
+        "client_id": CLIENT_ID,
+        "symbol": SYMBOL,
+        "side": side,
+        "amount": (RISK_USD * LEVERAGE) / price,
+        "price": price,
+        "type": "LIMIT", # Maker points
+        "tp": tp,
+        "sl": sl
+    }
+    
+    # Trimite către endpoint-ul de execuție Extended sau UltimateRobot Bridge
+    requests.post("https://api.extended.exchange/v1/order", json=order_data)
+    print(f"[{datetime.now()}] Poziție {side} deschisă la {price}. TP: {tp}, SL: {sl}")
 
-# ==========================================
-# THE FRONT DESK (For TradingView)
-# ==========================================
-@app.post("/webhook")
-async def handle_webhook(request: Request, bg_tasks: BackgroundTasks):
-    data = await request.json()
-    # Instantly pass the data to the background worker
-    bg_tasks.add_task(execute_trade_logic, data)
-    # Immediately hang up the phone with TradingView to prevent timeout
-    return {"status": "fast_ack", "message": "Signal received, processing in background"}
+def bot_loop():
+    global trades_today, last_trade_day
+    while True:
+        if datetime.now().day != last_trade_day:
+            trades_today = 0
+            last_trade_day = datetime.now().day
+
+        if trades_today < DAILY_LIMIT:
+            df = get_market_data()
+            signal = check_signals(df)
+            if signal:
+                execute_extended_trade(signal, df['close'].iloc[-1])
+                trades_today += 1
+        
+        time.sleep(60) # Verifică în fiecare minut
+
+@app.get("/")
+def status():
+    return {"bot": "HYPE-Sniper", "platform": "Extended", "trades_today": trades_today}
+
+threading.Thread(target=bot_loop, daemon=True).start()
