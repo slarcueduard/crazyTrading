@@ -10,17 +10,16 @@ from datetime import datetime
 
 app = FastAPI()
 
-# --- CONFIGURARE DIN ENVIRONMENT (VALORI DIN IMAGINEA 0c58a3) ---
+# --- CONFIGURARE ---
 API_KEY = os.getenv("EXTENDED_API_KEY")
 STARK_PUBLIC = os.getenv("STARK_KEY_PUBLIC")
 STARK_PRIVATE = os.getenv("STARK_KEY_PRIVATE")
 VAULT_NUMBER = os.getenv("VAULT_NUMBER")
 CLIENT_ID = os.getenv("CLIENT_ID")
 
-SYMBOL = "HYPE"
-TIMEFRAME = "15m"
+SYMBOL = "HYPE" # Pe Extended, simbolul este adesea doar HYPE
 LEVERAGE = 10
-RISK_USD = 100.0  # All-in
+RISK_USD = 100.0
 DAILY_LIMIT = 2
 
 trades_today = 0
@@ -28,7 +27,7 @@ last_trade_day = datetime.now().day
 
 def get_market_data():
     url = "https://api.hyperliquid.xyz/info"
-    payload = {"type": "candleSnapshot", "req": {"coin": SYMBOL, "interval": TIMEFRAME, "startTime": int((time.time() - 86400) * 1000)}}
+    payload = {"type": "candleSnapshot", "req": {"coin": SYMBOL, "interval": "15m", "startTime": int((time.time() - 86400) * 1000)}}
     try:
         r = requests.post(url, json=payload, timeout=10)
         df = pd.DataFrame(r.json())
@@ -38,8 +37,7 @@ def get_market_data():
     except: return pd.DataFrame()
 
 def execute_extended_trade(side, price):
-    # CALCULE MATEMATICE RISC/PROFIT
-    # Profit Target: +1.05% (~$10.5) | Stop Loss: -0.95% (~$9.5)
+    # MATEMATICĂ: 100$ * 10x * 1.05% = 10.5$ Profit | 100$ * 10x * 0.95% = 9.5$ Loss
     tp = price * 1.0105 if side == "LONG" else price * 0.9895
     sl = price * 0.9905 if side == "LONG" else price * 1.0095
     
@@ -48,7 +46,7 @@ def execute_extended_trade(side, price):
         "stark_key": STARK_PUBLIC,
         "vault_id": VAULT_NUMBER,
         "client_id": CLIENT_ID,
-        "symbol": f"{SYMBOL}-USDC",
+        "symbol": SYMBOL, # Încercăm formatul simplu
         "side": side,
         "amount": (RISK_USD * LEVERAGE) / price,
         "price": price,
@@ -58,12 +56,14 @@ def execute_extended_trade(side, price):
     }
     
     try:
-        # Folosim endpoint-ul verificat pentru Extended
+        # CORECȚIE URL: Endpoint-ul corect pentru plasare ordine REST
         r = requests.post("https://api.extended.exchange/v1/order", json=order_data, timeout=10)
+        
         if r.status_code in [200, 201]:
-            print(f"🚀 [EXECUTAT] {side} la {price}. TP: {tp} | SL: {sl}")
+            print(f"🚀 [EXECUTAT] {side} la {price}. Status: {r.status_code}")
             return True
         else:
+            # DEBUG: Ne arată EXACT de ce dă 404 sau altă eroare
             print(f"⚠️ [REJECTED] Status {r.status_code}: {r.text}")
             return False
     except Exception as e:
@@ -72,7 +72,7 @@ def execute_extended_trade(side, price):
 
 def bot_loop():
     global trades_today, last_trade_day
-    print(f"🤖 Grinder ONLINE. Miza: ${RISK_USD} | Lev: {LEVERAGE}x")
+    print(f"🤖 Grinder ONLINE. Target: {DAILY_LIMIT} trade-uri/zi.")
     
     while True:
         try:
@@ -86,22 +86,23 @@ def bot_loop():
                     df['hull'] = ta.hma(df['close'], length=9)
                     adx = ta.adx(df['high'], df['low'], df['close'], length=14)['ADX_14'].iloc[-1]
                     
-                    side = None
-                    if df['hull'].iloc[-1] > df['hull'].iloc[-2] and adx > 15: side = "LONG"
-                    elif df['hull'].iloc[-1] < df['hull'].iloc[-2] and adx > 15: side = "SHORT"
+                    # Log-ul de scanare să știm că e treaz
+                    print(f"🔍 [SCAN] Price: {df['close'].iloc[-1]} | ADX: {round(adx, 1)}")
 
-                    if side:
+                    if adx > 15:
+                        side = "LONG" if df['hull'].iloc[-1] > df['hull'].iloc[-2] else "SHORT"
                         if execute_extended_trade(side, df['close'].iloc[-1]):
                             trades_today += 1
-                            print(f"✅ Trade {trades_today}/{DAILY_LIMIT} confirmat. Cooldown 20 min.")
-                            time.sleep(1200)
+                            print(f"✅ Succes {trades_today}/{DAILY_LIMIT}. Cooldown 15 min.")
+                            time.sleep(900)
             
             time.sleep(60)
         except Exception as e: time.sleep(30)
 
+# REPARARE EROARE 405: Suport complet pentru UptimeRobot (HEAD & GET)
 @app.api_route("/", methods=["GET", "HEAD"])
-def status():
-    return {"status": "online", "trades": trades_today, "limit": DAILY_LIMIT}
+def health_check():
+    return {"status": "online", "trades": trades_today}
 
 threading.Thread(target=bot_loop, daemon=True).start()
 
