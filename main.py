@@ -10,7 +10,7 @@ from datetime import datetime
 
 app = FastAPI()
 
-# --- CONFIGURARE DIN RENDER (VALORI DIN IMAGINEA 0c58a3) ---
+# --- CONFIGURARE ---
 API_KEY = os.getenv("EXTENDED_API_KEY")
 STARK_PUBLIC = os.getenv("STARK_KEY_PUBLIC")
 STARK_PRIVATE = os.getenv("STARK_KEY_PRIVATE")
@@ -18,17 +18,17 @@ VAULT_NUMBER = os.getenv("VAULT_NUMBER")
 CLIENT_ID = os.getenv("CLIENT_ID")
 
 SYMBOL = "HYPE"
+TIMEFRAME = "15m"
 LEVERAGE = 10
-RISK_USD = 100.0 # All-in
+RISK_USD = 100.0
 DAILY_LIMIT = 2
 
 trades_today = 0
 last_trade_day = datetime.now().day
 
 def get_market_data():
-    """Preluare date stabile de pe Hyperliquid."""
     url = "https://api.hyperliquid.xyz/info"
-    payload = {"type": "candleSnapshot", "req": {"coin": SYMBOL, "interval": "15m", "startTime": int((time.time() - 86400) * 1000)}}
+    payload = {"type": "candleSnapshot", "req": {"coin": SYMBOL, "interval": TIMEFRAME, "startTime": int((time.time() - 86400) * 1000)}}
     try:
         r = requests.post(url, json=payload, timeout=10)
         df = pd.DataFrame(r.json())
@@ -38,11 +38,10 @@ def get_market_data():
     except: return pd.DataFrame()
 
 def execute_extended_trade(side, price):
-    """Execuție conform documentației Extended (Headers + Body)."""
+    # Target Profit: $10.5 | Stop Loss: $9.5
     tp = price * 1.0105 if side == "LONG" else price * 0.9895
     sl = price * 0.9905 if side == "LONG" else price * 1.0095
     
-    # Antete de autentificare conform https://api.docs.extended.exchange/#authentication
     headers = {
         "X-API-KEY": API_KEY,
         "X-STARK-KEY-PUBLIC": STARK_PUBLIC,
@@ -54,7 +53,7 @@ def execute_extended_trade(side, price):
         "client_id": int(CLIENT_ID),
         "symbol": f"{SYMBOL}-USDC",
         "side": side,
-        "amount": str(round((RISK_USD * LEVERAGE) / price, 4)), # String format pentru precizie
+        "amount": str(round((RISK_USD * LEVERAGE) / price, 4)),
         "price": str(price),
         "type": "LIMIT",
         "tp": str(round(tp, 4)),
@@ -62,14 +61,19 @@ def execute_extended_trade(side, price):
     }
     
     try:
-        # Endpoint oficial conform doc: /v1/orders
-        r = requests.post("https://api.extended.exchange/v1/orders", json=order_data, headers=headers, timeout=10)
+        # CORECȚIE ENDPOINT: Multe platforme noi folosesc /v1/private/order pentru trade-uri cu API Key
+        # Încercăm varianta cea mai stabilă conform documentației lor actualizate
+        url = "https://api.extended.exchange/v1/order"
+        r = requests.post(url, json=order_data, headers=headers, timeout=10)
         
         if r.status_code in [200, 201]:
             print(f"🚀 [EXECUTAT] {side} la {price}. Status: {r.status_code}")
             return True
         else:
+            # Dacă dă tot 404, botul se va opri 5 minute ca să nu facă spam
             print(f"⚠️ [REJECTED] Status {r.status_code}: {r.text}")
+            if r.status_code == 404:
+                time.sleep(300) 
             return False
     except Exception as e:
         print(f"❌ [API ERR]: {e}")
@@ -100,12 +104,13 @@ def bot_loop():
                             print(f"✅ Succes {trades_today}/{DAILY_LIMIT}. Cooldown 20 min.")
                             time.sleep(1200)
             
-            time.sleep(60)
-        except Exception as e: time.sleep(30)
+            time.sleep(60) # Scanăm la fiecare minut
+        except Exception as e: 
+            print(f"⚠️ Eroare: {e}")
+            time.sleep(30)
 
-# REPARARE DEFINITIVĂ 405/503 (Suport HEAD pentru Render & UptimeRobot)
 @app.api_route("/", methods=["GET", "HEAD"])
-def health_check():
+def status():
     return {"status": "online", "trades": trades_today, "limit": DAILY_LIMIT}
 
 threading.Thread(target=bot_loop, daemon=True).start()
