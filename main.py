@@ -18,7 +18,7 @@ STARK_PRIVATE = os.getenv("STARK_KEY_PRIVATE")
 VAULT_NUMBER = os.getenv("VAULT_NUMBER")
 CLIENT_ID = os.getenv("CLIENT_ID")
 
-SYMBOL = "HYPE" # Folosit pentru Hyperliquid API
+SYMBOL = "HYPE" # Activul principal pentru volum
 TIMEFRAME = "15m"
 LEVERAGE = 10
 RISK_USD = 100.0
@@ -29,17 +29,15 @@ trades_today = 0
 last_trade_day = datetime.now().day
 
 def get_market_data():
-    """Obține datele de piață direct de la Hyperliquid (Sursa Extended)."""
+    """Obține datele de piață direct de la Hyperliquid API."""
     url = "https://api.hyperliquid.xyz/info"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-    }
+    headers = {"User-Agent": "Mozilla/5.0"}
     payload = {
         "type": "candleSnapshot",
         "req": {
             "coin": SYMBOL,
             "interval": TIMEFRAME,
-            "startTime": int((time.time() - 86400 * 2) * 1000)
+            "startTime": int((time.time() - 86400) * 1000)
         }
     }
 
@@ -50,46 +48,43 @@ def get_market_data():
             
         data = r.json()
         df = pd.DataFrame(data)
-        # Mapare coloane: t=timestamp, o=open, h=high, l=low, c=close, v=volume
         df.rename(columns={'t': 'timestamp', 'o': 'open', 'h': 'high', 'l': 'low', 'c': 'close', 'v': 'volume'}, inplace=True)
         
         cols = ['open', 'high', 'low', 'close', 'volume']
         df[cols] = df[cols].astype(float)
         return df
     except Exception as e:
-        print(f"Eroare la preluarea datelor: {e}")
+        print(f"❌ [API ERROR]: {e}")
         return pd.DataFrame()
 
 def check_signals(df):
-    """Sistemul Sniper: EMA 200 + ADX + BB Squeeze + Hull + Volume Spike."""
-    if df.empty or len(df) < 200:
+    """Logica 'Airdrop Grinder': Prioritate pe Execuție și Volum."""
+    if df.empty or len(df) < 50:
         return None
 
-    # Calcule tehnice
-    df['ema200'] = ta.ema(df['close'], length=200)
-    adx_df = ta.adx(df['high'], df['low'], df['close'], length=14)
-    df['adx'] = adx_df['ADX_14']
-    bb = ta.bbands(df['close'], length=20, std=2)
-    df['bb_width'] = (bb['BBU_20_2.0'] - bb['BBL_20_2.0']) / bb['BBM_20_2.0']
-    df['hull'] = ta.hma(df['close'], length=14)
-    df['vol_sma'] = ta.sma(df['volume'], length=20)
+    # Indicatori optimizați pentru frecvență (Hull 9 + ADX 15)
+    df['hull'] = ta.hma(df['close'], length=9)
+    adx_series = ta.adx(df['high'], df['low'], df['close'], length=14)['ADX_14']
+    df['vol_sma'] = ta.sma(df['volume'], length=10)
 
     curr = df.iloc[-1]
     prev = df.iloc[-2]
+    current_adx = adx_series.iloc[-1]
 
-    # Logica de intrare
-    long_cond = (curr['close'] > curr['ema200'] and curr['adx'] > 25 and 
-                 curr['hull'] > prev['hull'] and curr['volume'] > curr['vol_sma'] * 1.5)
-    
-    short_cond = (curr['close'] < curr['ema200'] and curr['adx'] > 25 and 
-                  curr['hull'] < prev['hull'] and curr['volume'] > curr['vol_sma'] * 1.5)
+    # Heartbeat Log - Să știi exact ce vede botul în fiecare minut
+    print(f"🔍 [SCAN] Price: {curr['close']} | ADX: {round(current_adx, 1)} | Hull: {'UP' if curr['hull'] > prev['hull'] else 'DOWN'} | Vol: {round(curr['volume']/curr['vol_sma'], 2)}x")
+
+    # Condiții relaxate pentru a asigura cele 2 trade-uri/zi
+    long_cond = (curr['hull'] > prev['hull'] and current_adx > 15 and curr['volume'] > curr['vol_sma'] * 1.1)
+    short_cond = (curr['hull'] < prev['hull'] and current_adx > 15 and curr['volume'] > curr['vol_sma'] * 1.1)
 
     if long_cond: return "LONG"
     if short_cond: return "SHORT"
     return None
 
 def execute_extended_trade(side, price):
-    """Trimite comanda de execuție către API-ul Extended."""
+    """Execută ordinul LIMIT pe Extended pentru a fi Maker (Puncte Airdrop)."""
+    # Calcul profit net țintă: $10 (aprox 1% mișcare)
     tp = price * 1.0105 if side == "LONG" else price * 0.9895
     sl = price * 0.9905 if side == "LONG" else price * 1.0095
     
@@ -109,21 +104,23 @@ def execute_extended_trade(side, price):
     
     try:
         r = requests.post("https://api.extended.exchange/v1/order", json=order_data, timeout=10)
-        print(f"[{datetime.now()}] Poziție {side} trimisă. Status: {r.status_code}")
+        print(f"🚀 [TRADE] {side} trimis la {price}. Status: {r.status_code}")
     except Exception as e:
-        print(f"Eroare la execuție: {e}")
+        print(f"❌ [EXECUTION ERROR]: {e}")
 
 def bot_loop():
-    """Bucla principală care rulează în fundal."""
+    """Motorul principal de trading."""
     global trades_today, last_trade_day
-    print("Loop-ul de trading a pornit...")
+    print("🤖 Sistemul Sniper Airdrop este ONLINE.")
     
     while True:
         try:
-            # Resetare contor zilnic la miezul nopții
-            if datetime.now().day != last_trade_day:
+            # Reset zilnic la miezul nopții
+            now = datetime.now()
+            if now.day != last_trade_day:
+                print(f"📅 Zi nouă. Resetăm contorul de trade-uri.")
                 trades_today = 0
-                last_trade_day = datetime.now().day
+                last_trade_day = now.day
 
             if trades_today < DAILY_LIMIT:
                 df = get_market_data()
@@ -132,28 +129,27 @@ def bot_loop():
                 if signal:
                     execute_extended_trade(signal, df['close'].iloc[-1])
                     trades_today += 1
-                    print(f"Tranzacția {trades_today}/{DAILY_LIMIT} efectuată.")
+                    print(f"✅ Tranzacție finalizată ({trades_today}/{DAILY_LIMIT}).")
             
-            time.sleep(60) # Verifică în fiecare minut
+            time.sleep(60)
         except Exception as e:
-            print(f"Eroare în loop: {e}")
+            print(f"⚠️ [LOOP ERROR]: {e}")
             time.sleep(30)
 
-# Rute pentru monitorizare (UptimeRobot / Cron-job)
+# Rute obligatorii pentru UptimeRobot (Evită 405/503)
 @app.head("/")
 @app.get("/")
-def status():
+def health_check():
     return {
-        "bot": "HYPE-Sniper",
         "status": "online",
-        "trades_today": trades_today,
-        "last_check": datetime.now().isoformat()
+        "bot": "HYPE-Grinder",
+        "trades_completed": trades_today,
+        "limit_remaining": DAILY_LIMIT - trades_today
     }
 
-# Pornirea thread-ului de trading
+# Pornire procese
 threading.Thread(target=bot_loop, daemon=True).start()
 
-# Pornirea serverului web pe portul Render
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
